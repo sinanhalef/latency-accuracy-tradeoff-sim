@@ -120,3 +120,7 @@ Outputs are written to `outputs/figures/` and `outputs/tables/`.
 - **Abstracted model.** Accuracy is a knob, not the output of a trained network. There is no real inference and no measured wall-clock latency.
 - **Stylised execution.** Unit position size, a single holding horizon, no queue position, partial fills, or market impact. The bot gates on its believed edge but does not account for its own latency, so it can overtrade stale signals. That is a deliberate teaching point.
 - **Not a trading recommendation.** The project demonstrates a known mechanism in a controlled setting and should not be used to trade.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
