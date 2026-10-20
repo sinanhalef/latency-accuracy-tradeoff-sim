@@ -1,0 +1,8 @@
+# Pinned dependencies for full reproducibility (CPU-only; no GPU/ML deps).
+# Install with:  pip install -r requirements.txt
+numpy==2.4.6
+pandas==3.0.3
+matplotlib==3.11.0
+scipy==1.18.0
+PyYAML==6.0.3
+pytest==9.1.1

@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Generated outputs: regenerate with `python run.py --all` (~6 s).
+# README figures are committed under docs/images/ instead.
+outputs/figures/
+outputs/tables/
+
+# Secrets / local config (none used, kept as a safeguard)
+.env
+.env.*
+*.pem
+*.key
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

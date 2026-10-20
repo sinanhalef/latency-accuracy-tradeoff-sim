@@ -1,0 +1,161 @@
+# =====================================================================
+# config.yaml  --  ALL tunable parameters for the latency/accuracy sim
+# ---------------------------------------------------------------------
+# This is an *illustrative, controlled* proof-of-concept simulation that
+# makes the latency-vs-accuracy trade-off in real-time trading AI visible.
+# It is NOT a trading recommendation and uses synthetic data + an
+# abstracted model. Every number that affects results lives here so the
+# experiment is fully reproducible and easy to tune.
+# =====================================================================
+
+# Global random seed. Same seed + same config => byte-identical outputs.
+seed: 20260620
+
+# ---------------------------------------------------------------------
+# Synthetic market: mean-reverting Ornstein-Uhlenbeck (OU) latent "fair
+# value" plus i.i.d. microstructure noise, with optional rare jumps.
+#
+# Discrete update of the latent fair value X:
+#     X[t+1] = X[t] + theta*(mu - X[t]) + sigma*z[t]      z ~ N(0,1)
+# Observed mid price:
+#     P[t]   = X[t] + epsilon[t]                          epsilon ~ N(0, noise_sigma)
+#
+# Short-horizon mean reversion (controlled by `theta`) is what makes the
+# near-future direction *partly predictable*; it is ALSO what makes a
+# late entry harmful, because by the time a slow model is filled the move
+# it predicted has already begun to revert. That coupling is the engine
+# of the inverted-U profit curve.
+# ---------------------------------------------------------------------
+market:
+  n_ticks: 300000        # number of discrete ticks (price observations)
+  ms_per_tick: 1.0       # wall-clock ms represented by one tick (1 tick = 1 ms)
+  mu: 100.0              # OU long-run mean (price level)
+  theta: 0.02           # mean-reversion speed/tick. half-life = ln2/theta ~= 35 ticks
+  sigma: 0.10           # OU innovation volatility per tick (latent fair-value vol)
+  noise_sigma: 0.04     # microstructure (bid/ask bounce) noise std on observed mid
+  x0: 100.0             # initial latent fair value
+  jumps:
+    enabled: true
+    prob_per_tick: 0.0005   # probability a jump occurs on any given tick
+    size: 0.8               # std of jump magnitude (added to latent X)
+
+# ---------------------------------------------------------------------
+# Backtest / execution engine.
+#
+# A signal decided at tick t is FILLED at tick t+L (L = latency in ticks)
+# at the price prevailing then, and the position is closed after
+# `forward_horizon` ticks. This `t+L` fill rule is the latency penalty.
+# ---------------------------------------------------------------------
+backtest:
+  forward_horizon: 32    # h: ticks ahead the model predicts AND the holding period
+  decision_stride: 32    # space decision ticks this many ticks apart (>=h => ~non-overlapping trades)
+  predict_on_latent: true  # predict the sign of the *latent* fair-value move (vs. noisy observed)
+  fee_bps: 1.0           # exchange fee in basis points of notional (round-trip, simple)
+  spread_bps: 2.0        # bid/ask spread (bps). You cross HALF the spread on entry AND on
+                         # exit -> a full spread paid round-trip. This is the dominant real
+                         # HFT cost and it is baked into the fill PRICES (not the flat fee).
+  slippage_coeff: 0.0    # extra slippage in bps proportional to latency_ticks (2nd-order effect)
+
+  # Latency jitter: real inference/network latency is not a single number but a
+  # fat-tailed DISTRIBUTION (jitter + occasional spikes from GC pauses, queueing,
+  # network). Each bot's nominal latency L becomes a per-trade actual latency.
+  # The x-axis then reports each bot's realised AVERAGE latency.
+  latency_jitter:
+    enabled: true
+    rel_sigma: 0.30      # lognormal multiplicative jitter around L (sigma in log space)
+    tail_prob: 0.03      # probability of a tail spike on a given decision
+    tail_mult: 4.0       # a spike multiplies that decision's latency by up to this (hard cap)
+
+# ---------------------------------------------------------------------
+# Signal gating: how the bot decides WHETHER to trade at each decision.
+#
+# In the realistic mode (`enabled: true`) the model emits a continuous,
+# noisy estimate of the coming move (see model.generate_signal). At each
+# decision tick the bot estimates its expected edge and trades ONLY when
+# that edge clears its costs by a safety margin -- exactly like a real
+# system that waits for a strong-enough signal and otherwise stays flat.
+# The number of trades is therefore an OUTPUT, not a fixed clock.
+#
+# If `enabled: false`, the bot falls back to the legacy mode: a binary
+# right/wrong prediction taken on EVERY decision tick (always in market).
+# ---------------------------------------------------------------------
+signal:
+  enabled: true
+  threshold_mode: cost_aware   # 'cost_aware' (gate on believed edge vs cost) or 'zscore'
+  edge_multiple: 7.0           # cost_aware: trade only if believed edge >= edge_multiple * (fee + spread)
+  z_threshold: 0.6             # zscore: trade only if |standardised signal| >= z_threshold
+
+# ---------------------------------------------------------------------
+# Accuracy<->latency frontier. A single "model complexity" knob c in
+# [0,1] maps to an (accuracy p, latency L) pair: more complex models are
+# more accurate but slower. Real systems live on a frontier like this.
+#
+#   p(c) = p_min + (p_max - p_min) * (1 - exp(-k * c))      # saturating accuracy gain
+#   L(c) = L_min + (L_max - L_min) * c**gamma               # latency grows with complexity
+# ---------------------------------------------------------------------
+frontier:
+  p_min: 0.52    # accuracy of the simplest/fastest model (barely better than a coin)
+  p_max: 0.80    # accuracy of the most complex/slowest model
+  k: 2.5         # curvature of the accuracy-vs-complexity saturation
+  L_min: 0.1     # latency (ms) of the fastest model
+  L_max: 30.0    # latency (ms) of the slowest model
+  gamma: 1.2     # convexity of latency growth (gamma>1 => latency accelerates at high c)
+
+# ---------------------------------------------------------------------
+# Experiment sweep ranges.
+# ---------------------------------------------------------------------
+experiments:
+  # Exp 1: main inverted-U sweep along the frontier.
+  frontier_sweep:
+    n_points: 30         # number of complexity points c in [0,1] (= number of bots racing)
+    n_seeds: 20          # number of independent market realisations for confidence bands
+
+  # Exp 2: decoupled heatmap over an (accuracy, latency) grid.
+  heatmap:
+    n_accuracy: 25       # grid resolution on the accuracy axis
+    n_latency: 25        # grid resolution on the latency axis
+    acc_min: 0.50
+    acc_max: 0.85
+    lat_min: 0.0         # ms
+    lat_max: 30.0        # ms
+
+  # Exp 4: sensitivity analysis -- re-run the frontier sweep while
+  # scaling the market volatility (sigma). Each entry is a multiplier.
+  sensitivity:
+    sigma_multipliers: [0.6, 1.0, 1.6, 2.4]
+
+# ---------------------------------------------------------------------
+# Exp 3: software-engineering techniques mapped onto the frontier.
+# Each technique is an explicit operating point. `latency_dist` makes a
+# technique adaptive: latency varies *per decision* (early-exit), so we
+# report the realized AVERAGE latency.
+# ---------------------------------------------------------------------
+se_techniques:
+  - name: "Baseline (FP32)"
+    accuracy: 0.77
+    latency_ms: 22.0       # accurate but slow: full-precision, full-depth network
+
+  - name: "Quantization (INT8)"
+    accuracy: 0.745         # small accuracy cost...
+    latency_ms: 7.0         # ...for a large latency win (shift left on the frontier)
+
+  - name: "Pruning"
+    accuracy: 0.725         # moderate accuracy drop
+    latency_ms: 11.0        # moderate latency drop
+
+  - name: "Early-exit (adaptive)"
+    accuracy: 0.765          # near-baseline accuracy...
+    latency_dist:            # ...but per-decision latency: most ticks exit early, few go deep
+      kind: "mixture"
+      # (weight, latency_ms) components -> realized average latency is low
+      components:
+        - {weight: 0.80, latency_ms: 3.0}    # easy decisions: shallow, fast
+        - {weight: 0.15, latency_ms: 12.0}   # medium decisions
+        - {weight: 0.05, latency_ms: 22.0}   # hard decisions: full depth
+
+# ---------------------------------------------------------------------
+# Output locations (relative to the project root).
+# ---------------------------------------------------------------------
+output:
+  figures_dir: "outputs/figures"
+  tables_dir: "outputs/tables"
